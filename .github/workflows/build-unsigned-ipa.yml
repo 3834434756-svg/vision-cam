@@ -87,7 +87,10 @@ jobs:
         run: |
           set -euo pipefail
           APP="$RUNNER_TEMP/build/App.xcarchive/Products/Applications/${PRODUCT_NAME}.app"
-          ls -la "$APP" | head -40
+          # 注意：不要用 `ls | head`，pipefail 下 head 提前退出会让 ls 收到 SIGPIPE 而误判失败
+          ls -la "$APP"
+          echo "--- mlmodelc 内容 ---"
+          ls -la "$APP/YOLOv8n.mlmodelc" || true
           if [ ! -d "$APP/YOLOv8n.mlmodelc" ]; then
             echo "::error::YOLOv8n.mlmodelc 不在 app bundle 里，CoreML 模型没有被编译进去"
             exit 1
