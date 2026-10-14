@@ -1,0 +1,57 @@
+# ============================================================================
+# XcodeGen 工程描述文件 —— 视觉相机 VisionCam
+#
+# 项目里没有 .xcodeproj（手写 pbxproj 极易出错），改为在 CI 里用 XcodeGen
+# 现场生成工程再编译。workflow 里对应步骤：
+#     brew install xcodegen && xcodegen generate
+# ============================================================================
+
+name: VisionCam
+
+options:
+  bundleIdPrefix: com.visioncam
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # 统一关闭签名 —— 云端出的是未签名 IPA
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  VisionCam:
+    type: application
+    platform: iOS
+    sources:
+      - path: VisionCam
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.visioncam.app
+        PRODUCT_NAME: VisionCam
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # Info.plist 由 XcodeGen 从下面的 info: 段生成，不要让 Xcode 再自动生成一份
+        GENERATE_INFOPLIST_FILE: "NO"
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: 视觉相机
+        CFBundleName: VisionCam
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        NSCameraUsageDescription: 需要使用相机来实时识别物体和人体姿态。所有画面均在本机处理，不会上传到任何服务器。
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

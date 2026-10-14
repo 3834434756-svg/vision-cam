@@ -1,0 +1,12 @@
+# XcodeGen 生成的工程与 Info.plist 不入库
+*.xcodeproj
+Support/Info.plist
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.xcarchive
+
+# 系统
+.DS_Store

@@ -1,0 +1,144 @@
+# ============================================================================
+# 云端打包「未签名 IPA」—— VisionCam（XcodeGen 工程）
+#
+# 放到项目根目录：.github/workflows/build-unsigned-ipa.yml
+# 推送后到仓库 Actions 页面看进度，产物在 Release 与 Artifacts 区。
+#
+# 本 workflow 不配置任何证书、不配置任何描述文件，构建时关闭代码签名，
+# 产出的是「未签名 IPA」，需要用免费 Apple ID（Sideloadly / AltStore /
+# SideStore）或自备证书重签之后才能装到 iPhone 上。
+# ============================================================================
+
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # 不要用 macos-latest（移动标签，会随 GitHub 升级系统漂移）
+  #   macos-15 → 默认 Xcode 16.4，跑老项目更稳
+  #   macos-26 → 默认 Xcode 26.6，需要 iOS 26 SDK 时用
+  XCODE_PATH: /Applications/Xcode_16.4.app
+  SCHEME: VisionCam
+  PRODUCT_NAME: VisionCam
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 环境探测
+        run: |
+          set -euxo pipefail
+          sw_vers
+          uname -m
+          xcode-select -p
+          xcodebuild -version
+
+      - name: 选择 Xcode
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+
+      - name: 安装 XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+
+      - name: 生成 Xcode 工程
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          echo "--- 工程目录 ---"
+          ls -la
+          echo "--- scheme 列表 ---"
+          xcodebuild -list -project "${PRODUCT_NAME}.xcodeproj"
+          echo "--- 确认 CoreML 模型被纳入编译 ---"
+          grep -c "YOLOv8n.mlpackage" "${PRODUCT_NAME}.xcodeproj/project.pbxproj" || true
+
+      - name: Archive（关闭代码签名）
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "${PRODUCT_NAME}.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/build/App.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tail -400
+
+      - name: 确认模型已编译进产物
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/build/App.xcarchive/Products/Applications/${PRODUCT_NAME}.app"
+          ls -la "$APP" | head -40
+          if [ ! -d "$APP/YOLOv8n.mlmodelc" ]; then
+            echo "::error::YOLOv8n.mlmodelc 不在 app bundle 里，CoreML 模型没有被编译进去"
+            exit 1
+          fi
+          echo "✅ YOLOv8n.mlmodelc 已在 bundle 内"
+
+      - name: 打包成未签名 IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/build/App.xcarchive/Products/Applications/${PRODUCT_NAME}.app"
+          mkdir -p "$RUNNER_TEMP/out/Payload"
+          # ditto 保留符号链接与扩展属性；符号链接丢了会导致装不上
+          ditto "$APP" "$RUNNER_TEMP/out/Payload/${PRODUCT_NAME}.app"
+          cd "$RUNNER_TEMP/out"
+          zip -qry "${PRODUCT_NAME}-unsigned.ipa" Payload
+          rm -rf Payload
+          ls -lh "${PRODUCT_NAME}-unsigned.ipa"
+
+      - name: 校验产物确实是未签名的
+        run: |
+          set -euo pipefail
+          IPA="$RUNNER_TEMP/out/${PRODUCT_NAME}-unsigned.ipa"
+          unzip -l "$IPA" | head -30
+          if unzip -l "$IPA" | grep -q '_CodeSignature/'; then
+            echo "::error::产物里出现 _CodeSignature/，签名没有被完全关闭"
+            exit 1
+          fi
+          if unzip -l "$IPA" | grep -q 'embedded.mobileprovision'; then
+            echo "::error::产物里出现 embedded.mobileprovision，这不是未签名包"
+            exit 1
+          fi
+          echo "✅ 已确认是未签名 IPA"
+
+      - name: 上传 Artifact（需登录 GitHub 才能下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: ${{ runner.temp }}/out/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 发布到 Release（免登录下载链接）
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IPA="$RUNNER_TEMP/out/${PRODUCT_NAME}-unsigned.ipa"
+          TAG="build-$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" "$IPA" \
+            --title "${PRODUCT_NAME} 未签名 IPA ${TAG}" \
+            --notes "由 GitHub Actions 在 macOS runner 上构建的未签名 IPA。需要用免费 Apple ID（Sideloadly / AltStore / SideStore）或自备证书重签后才能安装。" \
+            --latest
+          echo "下载页: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
