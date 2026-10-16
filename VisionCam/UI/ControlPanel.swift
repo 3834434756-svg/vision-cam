@@ -71,9 +71,9 @@ struct ControlPanel: View {
         }
         switch (engine.detectObjects, engine.detectPose) {
         case (true, true):
-            return "青色框 = 人物（带骨架）· 黄色框 = 其他物体"
+            return "青色框 = 人物（带骨架）· 黄色框 = 其他物体\n物体识别聚焦画面中央正方形区域，把目标放中间更准"
         case (true, false):
-            return "黄色框 = 识别到的物体"
+            return "黄色框 = 识别到的物体\n物体识别聚焦画面中央正方形区域，把目标放中间更准"
         case (false, true):
             return "青色框 = 人物，橙线 = 骨骼连接"
         case (false, false):

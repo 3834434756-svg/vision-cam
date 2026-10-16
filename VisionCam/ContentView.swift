@@ -53,7 +53,7 @@ struct ContentView: View {
             StatusPill(icon: "timer",
                        text: String(format: "%.0f ms", engine.latencyMilliseconds))
             StatusPill(icon: "viewfinder",
-                       text: "\(engine.items.count) 个目标")
+                       text: "物体 \(objectCount) · 人物 \(personCount)")
 
             Spacer(minLength: 0)
 
@@ -63,6 +63,16 @@ struct ContentView: View {
                            tint: .orange)
             }
         }
+    }
+
+    /// 当前帧识别到的普通物体数量。
+    private var objectCount: Int {
+        engine.items.reduce(0) { $0 + ($1.isPerson ? 0 : 1) }
+    }
+
+    /// 当前帧识别到的人物数量（姿态骨架或 YOLO 的 person 类）。
+    private var personCount: Int {
+        engine.items.reduce(0) { $0 + ($1.isPerson ? 1 : 0) }
     }
 
     // MARK: - 权限提示

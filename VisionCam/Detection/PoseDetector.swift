@@ -93,10 +93,10 @@ final class PoseDetector {
         let box = CGRect(x: left, y: bottom, width: right - left, height: top - bottom)
         let average = confidenceSum / Float(joints.count)
 
-        return DetectedItem(label: "人物",
-                            confidence: average,
-                            box: box,
-                            joints: joints,
-                            jointConfidences: confidences)
+        return .person(label: "人物",
+                       confidence: average,
+                       box: box,
+                       joints: joints,
+                       jointConfidences: confidences)
     }
 }

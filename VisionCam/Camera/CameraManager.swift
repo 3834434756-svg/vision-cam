@@ -109,8 +109,12 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             let output = AVCaptureVideoDataOutput()
+            // 用相机原生的双平面 YUV 格式，而不是 BGRA：
+            // 每像素 1.5 字节（BGRA 是 4 字节），Vision 也能直接吃这种格式，
+            // 省掉一次全帧色彩空间转换，是整条链路里最划算的一处优化。
             output.videoSettings = [
-                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
             ]
             output.alwaysDiscardsLateVideoFrames = true
             output.setSampleBufferDelegate(self, queue: self.outputQueue)

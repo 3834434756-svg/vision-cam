@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreML
 import ImageIO
 import Vision
@@ -8,24 +9,40 @@ import Vision
 ///   * 输入：`image`（640×640，RGB）
 ///   * 输出：`confidence` 形状 [N, 80]，`coordinates` 形状 [N, 4]
 ///
-/// `coordinates` 每行是 `[cx, cy, w, h]`，**已归一化到 0~1**（据 Apple CoreML
-/// 官方 proto：x/y 是盒子中心点，w/h 是宽高）。所以直接乘图像尺寸即可还原。
+/// `coordinates` 每行是 `[cx, cy, w, h]`，**已归一化到 0~1**（Apple 官方
+/// CoreML proto 对 pipeline NMS 的定义：x/y 是盒子中心点，w/h 是宽高）。
 ///
-/// 注意：原始模型还带 `iouThreshold` / `confidenceThreshold` 两个必填标量输入，
-/// 会导致 Vision 无法调用。本工程内置的 `YOLOv8n.mlpackage` 已打补丁把这两个
-/// 输入移除，让 NMS 阶段回退使用内置参数（0.45 / 0.25），从而只剩单个 image 输入。
+/// ## 关于裁剪方式（这是检测精度的关键）
+///
+/// 手机竖屏取景时画面是「高瘦」的（如 720×1280），而模型输入是正方形。
+/// Vision 提供三种缩放方式，实测差异极大：
+///
+/// | 方式 | 是否失真 | 送进模型的内容 | 结果 |
+/// |---|---|---|---|
+/// | `.scaleFill` | 严重（宽高比 0.56 → 1.0） | 640×640 全图 | 小物体几乎检不出 |
+/// | `.scaleFit` | 无 | 360×640（横向分辨率砍半） | 全画面但偏模糊 |
+/// | `.centerCrop` | 无 | 640×640（仅中心正方形） | 最清晰 |
+///
+/// 这里选 **`.centerCrop`**：从画面中心裁出正方形再等比缩放到 640×640，
+/// 既不失真也不损失分辨率，代价是上下边缘不在检测范围内。
+/// 裁剪区域与预览画面中心对齐，所以只需把「裁剪正方形内的归一化坐标」
+/// 映射回「整幅画面的归一化坐标」即可，映射关系见 `CropMapping`。
 final class ObjectDetector {
 
     private static let modelName = "YOLOv8n"
 
-    private let vnModel: VNCoreMLModel
+    /// 复用同一个 request：`VNCoreMLRequest` 不是线程安全的，
+    /// 但本类只在检测串行队列上使用，复用可以省掉每帧的构建开销。
+    private let request: VNCoreMLRequest
 
     init?() {
         guard let model = ObjectDetector.loadModel(named: ObjectDetector.modelName),
               let vnModel = try? VNCoreMLModel(for: model) else {
             return nil
         }
-        self.vnModel = vnModel
+        let request = VNCoreMLRequest(model: vnModel)
+        request.imageCropAndScaleOption = .centerCrop
+        self.request = request
     }
 
     /// 优先加载 Xcode 编译好的 `.mlmodelc`；万一被当成普通资源打进包，
@@ -53,16 +70,14 @@ final class ObjectDetector {
     /// - Parameters:
     ///   - pixelBuffer: 相机输出帧。
     ///   - orientation: 把该帧摆正所需的 EXIF 方向。
+    ///   - orientedSize: 摆正后的图像尺寸，用于把裁剪坐标映射回整幅画面。
     ///   - minConfidence: 前端置信度门槛（模型内部门槛是 0.25，这里只做二次过滤）。
     ///   - skipPersonClass: 是否跳过 `person` 类。姿态检测已单独处理人物时置 true，避免重复画框。
     func detect(pixelBuffer: CVPixelBuffer,
                 orientation: CGImagePropertyOrientation,
+                orientedSize: CGSize,
                 minConfidence: Float,
                 skipPersonClass: Bool) -> [DetectedItem] {
-
-        let request = VNCoreMLRequest(model: vnModel)
-        // scaleFill：把整幅图拉伸到 640×640。归一化坐标因此可以 1:1 映射回原图。
-        request.imageCropAndScaleOption = .scaleFill
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
                                             orientation: orientation,
@@ -97,7 +112,8 @@ final class ObjectDetector {
         return ObjectDetector.parse(confidence: confidence,
                                     coordinates: coordinates,
                                     minConfidence: minConfidence,
-                                    skipPersonClass: skipPersonClass)
+                                    skipPersonClass: skipPersonClass,
+                                    crop: CropMapping(orientedSize: orientedSize))
     }
 
     // MARK: - 输出解析
@@ -105,29 +121,40 @@ final class ObjectDetector {
     private static func parse(confidence: MLMultiArray,
                               coordinates: MLMultiArray,
                               minConfidence: Float,
-                              skipPersonClass: Bool) -> [DetectedItem] {
+                              skipPersonClass: Bool,
+                              crop: CropMapping) -> [DetectedItem] {
 
         let confidenceShape = confidence.shape.map { $0.intValue }
         let coordinateShape = coordinates.shape.map { $0.intValue }
 
-        guard confidenceShape.count == 2,
-              coordinateShape.count == 2,
-              coordinateShape[1] == 4 else {
+        guard confidenceShape.count >= 2,
+              coordinateShape.count >= 2,
+              coordinateShape.last == 4 else {
             return []
         }
 
-        let count = min(confidenceShape[0], coordinateShape[0])
-        let classCount = confidenceShape[1]
+        // 把 batch 维（若有）折算进行数
+        let confidenceRows = confidenceShape.dropLast().reduce(1, *)
+        let coordinateRows = coordinateShape.dropLast().reduce(1, *)
+        let count = min(confidenceRows, coordinateRows)
+        let classCount = confidenceShape[confidenceShape.count - 1]
+
         guard count > 0, classCount > 0 else { return [] }
 
+        // 一次性取出裸指针与步长，避免在内层循环里反复重建 strides 数组
+        let confidenceReader = MatrixReader(confidence)
+        let coordinateReader = MatrixReader(coordinates)
+
         var items: [DetectedItem] = []
-        items.reserveCapacity(count)
+        items.reserveCapacity(min(count, 32))
+
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
 
         for row in 0..<count {
             var bestClass = -1
             var bestScore: Float = 0
             for column in 0..<classCount {
-                let score = value(confidence, row, column)
+                let score = confidenceReader.value(row, column)
                 if score > bestScore {
                     bestScore = score
                     bestClass = column
@@ -137,46 +164,123 @@ final class ObjectDetector {
             guard bestClass >= 0, bestScore >= minConfidence else { continue }
             if skipPersonClass && bestClass == COCOLabels.personIndex { continue }
 
-            // 归一化的 [cx, cy, w, h]
-            let centerX = value(coordinates, row, 0)
-            let centerY = value(coordinates, row, 1)
-            let width = value(coordinates, row, 2)
-            let height = value(coordinates, row, 3)
+            // 模型给的 [cx, cy, w, h]：原点左上、y 向下，且相对「中心裁剪的正方形」
+            let centerX = coordinateReader.value(row, 0)
+            let centerY = coordinateReader.value(row, 1)
+            let boxWidth = coordinateReader.value(row, 2)
+            let boxHeight = coordinateReader.value(row, 3)
 
-            guard width > 0.001, height > 0.001 else { continue }
+            guard boxWidth > 0.001, boxHeight > 0.001 else { continue }
 
-            // 换算成 Vision 坐标系：原点左下，y 轴向上。
-            // 模型给的是「原点左上、y 轴向下」的中心点坐标。
-            let left = CGFloat(centerX - width / 2)
-            let top = CGFloat(centerY - height / 2)
-            let rect = CGRect(x: left,
-                              y: 1 - top - CGFloat(height),
-                              width: CGFloat(width),
-                              height: CGFloat(height))
+            let leftInCrop = CGFloat(centerX - boxWidth / 2)
+            let topInCrop = CGFloat(centerY - boxHeight / 2)
 
-            let clipped = rect.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            // 映射回整幅画面（仍是 y 向下）
+            let fullLeft = crop.originX + leftInCrop * crop.scaleX
+            let fullTop = crop.originY + topInCrop * crop.scaleY
+            let fullWidth = CGFloat(boxWidth) * crop.scaleX
+            let fullHeight = CGFloat(boxHeight) * crop.scaleY
+
+            // 换成 Vision 坐标：原点左下、y 轴向上
+            let rect = CGRect(x: fullLeft,
+                              y: 1 - fullTop - fullHeight,
+                              width: fullWidth,
+                              height: fullHeight)
+
+            let clipped = rect.intersection(unit)
             guard !clipped.isNull, clipped.width > 0.005, clipped.height > 0.005 else { continue }
 
-            items.append(.object(label: COCOLabels.displayName(index: bestClass),
-                                 confidence: bestScore,
-                                 box: clipped))
+            let label = COCOLabels.displayName(index: bestClass)
+            if bestClass == COCOLabels.personIndex {
+                // 姿态检测关闭时人物由 YOLO 负责，走人物配色（无骨架）
+                items.append(.person(label: label,
+                                     confidence: bestScore,
+                                     box: clipped,
+                                     joints: [:],
+                                     jointConfidences: [:]))
+            } else {
+                items.append(.object(label: label, confidence: bestScore, box: clipped))
+            }
         }
 
         return items
     }
+}
 
-    /// 读取二维多数组第 (row, column) 个元素，兼容 float32 / float16 / double。
-    private static func value(_ array: MLMultiArray, _ row: Int, _ column: Int) -> Float {
-        let strides = array.strides
-        let offset = row * strides[0].intValue + column * strides[1].intValue
+// MARK: - 中心裁剪的坐标换算
 
-        switch array.dataType {
+/// 描述「中心裁剪出的正方形」与「整幅摆正画面」之间的位置关系。
+///
+/// 模型看到的是裁剪后的正方形，所以它吐出的归一化坐标是相对该正方形的；
+/// 而预览显示的是整幅画面，画框前必须先映射回去。
+///
+/// 裁剪是居中的，因此 y 向下与 y 向上两套坐标系下的原点偏移量相同。
+private struct CropMapping {
+
+    /// 裁剪正方形左上角在整幅画面中的归一化位置。
+    let originX: CGFloat
+    let originY: CGFloat
+    /// 裁剪正方形边长占整幅画面宽 / 高的比例。
+    let scaleX: CGFloat
+    let scaleY: CGFloat
+
+    init(orientedSize: CGSize) {
+        let width = max(orientedSize.width, 1)
+        let height = max(orientedSize.height, 1)
+        let side = min(width, height)
+        let scaleX = side / width
+        let scaleY = side / height
+
+        self.originX = (1 - scaleX) / 2
+        self.originY = (1 - scaleY) / 2
+        self.scaleX = scaleX
+        self.scaleY = scaleY
+    }
+}
+
+// MARK: - 多数组读取
+
+/// 轻量二维读取器：提前缓存裸指针与步长，兼容 float32 / float16 / double。
+///
+/// 直接照搬 `MLMultiArray` 的 strides 读取，因此无论数组是否连续、
+/// 是否带 batch 维都能正确取值。
+private struct MatrixReader {
+
+    private let pointer: UnsafeMutableRawPointer
+    private let rowStride: Int
+    private let columnStride: Int
+    private let dataType: MLMultiArrayDataType
+
+    init(_ array: MLMultiArray) {
+        self.pointer = array.dataPointer
+        self.dataType = array.dataType
+
+        let strides = array.strides.map { $0.intValue }
+        if array.shape.count >= 3, strides.count >= 3 {
+            // 带 batch 维（恒为 1）：取最后两维的步长
+            self.rowStride = strides[strides.count - 2]
+            self.columnStride = strides[strides.count - 1]
+        } else if strides.count >= 2 {
+            self.rowStride = strides[0]
+            self.columnStride = strides[1]
+        } else {
+            self.rowStride = 0
+            self.columnStride = strides.first ?? 1
+        }
+    }
+
+    func value(_ row: Int, _ column: Int) -> Float {
+        let elementOffset = row * rowStride + column * columnStride
+        switch dataType {
         case .float32:
-            return array.dataPointer.bindMemory(to: Float32.self, capacity: array.count)[offset]
+            return pointer.load(fromByteOffset: elementOffset * MemoryLayout<Float32>.size,
+                                as: Float32.self)
         case .float16:
-            return Float(array.dataPointer.bindMemory(to: Float16.self, capacity: array.count)[offset])
+            return Float(pointer.load(fromByteOffset: elementOffset * MemoryLayout<Float16>.size,
+                                      as: Float16.self))
         case .double:
-            return Float(array.dataPointer.bindMemory(to: Double.self, capacity: array.count)[offset])
+            return Float(pointer.load(fromByteOffset: elementOffset * MemoryLayout<Double>.size,
+                                      as: Double.self))
         default:
             return 0
         }
