@@ -61,8 +61,8 @@ Vision 的三种缩放方式实测差异极大：
 早期版本用了 `.scaleFill`，纵向被压缩到 50%，结果只有「人」这类大目标还能检出，
 杯子、手机、书本基本全丢。现在改用 **`.centerCrop`**：从画面中心裁出正方形再等比
 缩放到 640×640，既不失真也不掉分辨率；代价是上下边缘不在检测范围内，所以
-**把目标放在画面中央识别更准**。裁剪区域与预览中心对齐，坐标换算见
-`ObjectDetector.CropMapping`。
+**把目标放在画面中央识别更准**。App 里用四个 L 形角标标出了这个范围，
+裁剪区域与预览中心对齐，坐标换算见 `ObjectDetector.CropMapping`。
 
 > **踩过的坑**：原始导出的模型除了 `image` 还带 `iouThreshold` /
 > `confidenceThreshold` 两个必填标量输入，`VNCoreMLRequest` 无法提供，

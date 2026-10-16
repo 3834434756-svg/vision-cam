@@ -31,6 +31,11 @@ final class DetectionEngine: ObservableObject {
     @Published private(set) var isModelReady = false
     /// 加载失败原因。
     @Published private(set) var modelErrorMessage: String?
+    /// 物体检测实际覆盖的区域（Vision 归一化坐标，原点左下）。
+    ///
+    /// 物体检测走中心裁剪，上下边缘落在检测范围之外；UI 用它画取景提示，
+    /// 让用户知道把目标放在哪里最准。物体检测关闭时为 nil。
+    @Published private(set) var objectRegion: CGRect?
 
     // MARK: 用户可调
 
@@ -88,6 +93,7 @@ final class DetectionEngine: ObservableObject {
         let wantObjects = detectObjects
         let wantPose = detectPose
         let threshold = Float(minConfidence)
+        let region = wantObjects ? DetectionEngine.objectRegion(for: orientedSize) : nil
 
         queue.async { [weak self] in
             guard let self = self else { return }
@@ -158,10 +164,26 @@ final class DetectionEngine: ObservableObject {
             DispatchQueue.main.async {
                 self.items = sorted
                 self.orientedImageSize = orientedSize
+                self.objectRegion = region
                 self.latencyMilliseconds = latency
                 self.fps = fps
             }
         }
+    }
+
+    /// 物体检测覆盖的归一化区域：即中心裁剪出的正方形在整幅画面中的位置。
+    ///
+    /// 裁剪是居中的，所以 y 向下与 y 向上两套坐标系下的偏移量相同。
+    private static func objectRegion(for orientedSize: CGSize) -> CGRect {
+        let width = max(orientedSize.width, 1)
+        let height = max(orientedSize.height, 1)
+        let side = min(width, height)
+        let normalizedWidth = side / width
+        let normalizedHeight = side / height
+        return CGRect(x: (1 - normalizedWidth) / 2,
+                      y: (1 - normalizedHeight) / 2,
+                      width: normalizedWidth,
+                      height: normalizedHeight)
     }
 
     /// 清空当前结果（切后台 / 停相机时用）。

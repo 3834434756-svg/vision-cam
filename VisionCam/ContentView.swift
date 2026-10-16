@@ -12,7 +12,9 @@ struct ContentView: View {
             CameraPreview(session: camera.session)
                 .ignoresSafeArea()
 
-            OverlayView(items: engine.items, imageSize: engine.orientedImageSize)
+            OverlayView(items: engine.items,
+                        imageSize: engine.orientedImageSize,
+                        objectRegion: engine.objectRegion)
                 .ignoresSafeArea()
 
             VStack(spacing: 12) {
