@@ -68,7 +68,7 @@ final class DetectionEngine: ObservableObject {
         self.objectDetector = detector
         self.isModelReady = detector != nil
         if detector == nil {
-            self.modelErrorMessage = "未能加载 YOLOv8n 模型，物体识别不可用。"
+            self.modelErrorMessage = "未能加载 YOLO11s 模型，物体识别不可用。"
         }
     }
 

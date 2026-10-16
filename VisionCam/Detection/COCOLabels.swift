@@ -2,7 +2,7 @@ import Foundation
 
 /// COCO 80 类的中英文名称。
 ///
-/// 模型（YOLOv8n，COCO 预训练）输出的类别索引就是这张表的顺序，
+/// 模型（YOLO11s，COCO 预训练）输出的类别索引就是这张表的顺序，
 /// 索引与 CoreML 模型内置的 `stringClassLabels` 完全一致。
 enum COCOLabels {
 

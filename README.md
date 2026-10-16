@@ -11,7 +11,7 @@
 
 | | 说明 |
 |---|---|
-| **物体识别** | YOLOv8n（CoreML，COCO 80 类）实时检测，画出方框 + 中文名称 + 置信度 |
+| **物体识别** | YOLO11s（CoreML，COCO 80 类）实时检测，画出方框 + 中文名称 + 置信度 |
 | **人体姿态** | Vision `VNDetectHumanBodyPoseRequest`，19 个关键点 + 骨骼连线，附带人物外框 |
 | **实时叠加** | 相机画面 + 检测结果叠加显示，底部可开关各项检测、调置信度门槛、切换前后摄像头 |
 | **性能监控** | 顶部实时显示 FPS、单帧推理耗时，以及物体 / 人物数量 |
@@ -30,13 +30,30 @@
    肉眼可接受。只开一个检测器时不降频。
 3. **预取 `MLMultiArray` 裸指针与步长** —— 去掉内层循环里重复的 strides 计算。
 
-如果仍然偏慢，可在底部关掉「姿态骨架」——姿态模型通常比 YOLOv8n 更吃时间。
+如果仍然偏慢，可在底部关掉「姿态骨架」——姿态模型通常比物体检测更吃时间；
+也可以换回更小的模型档位（见下文「模型选择」）。
 
 ## 技术方案
 
 ### 物体检测
 
-用 YOLOv8n 的 CoreML 版本（Ultralytics 导出，**NMS 已内置在模型里**）：
+**模型选择**：`YOLO11s`（COCO 预训练，9.4M 参数，mAP 47.0）。初版用的是
+`YOLOv8n`（3.2M 参数，mAP 37.3），实测常见物品漏检严重；换成 s 档后精度提升约
+10 个点，代价是模型从 6.2 MB 增到 19 MB。再往上还有 m / l / x 档，精度更高但推理
+更慢，手机上 s 是速度与精度的平衡点。
+
+自行导出（需 macOS 或 CI 的 macOS runner）：
+
+```bash
+pip install ultralytics coremltools "torch==2.7.0"   # coremltools 9.0 只测到 torch 2.7.0
+python -c "from ultralytics import YOLO; YOLO('yolo11s.pt').export(format='coreml', nms=True, imgsz=640)"
+python tools/patch_model.py yolo11s.mlpackage YOLO11s.mlpackage
+```
+
+> torch 装成更高版本（如 2.14）会在转换时报
+> `only 0-dimensional arrays can be converted to Python scalars`。
+
+模型结构（Ultralytics 导出，**NMS 已内置在 pipeline 里**）：
 
 ```
 输入  image       640×640 RGB
@@ -66,7 +83,7 @@ Vision 的三种缩放方式实测差异极大：
 
 > **踩过的坑**：原始导出的模型除了 `image` 还带 `iouThreshold` /
 > `confidenceThreshold` 两个必填标量输入，`VNCoreMLRequest` 无法提供，
-> 会导致调用失败。本仓库内置的 `YOLOv8n.mlpackage` 已用 coremltools 打补丁
+> 会导致调用失败。本仓库内置的 `YOLO11s.mlpackage` 已用 coremltools 打补丁
 > 移除这两个输入（清空 `*InputFeatureName`），让 NMS 阶段回退使用内置参数
 > （IoU 0.45 / 置信度 0.25），从而只剩单个 `image` 输入，Vision 可以直接跑。
 > 打补丁的脚本见 `tools/patch_model.py`。
@@ -107,7 +124,7 @@ VisionCam/
     ├── Detection/
     │   ├── DetectionTypes.swift    # DetectedItem / Joint / 骨骼连接表
     │   ├── COCOLabels.swift        # COCO 80 类中英文名
-    │   ├── ObjectDetector.swift    # YOLOv8n + Vision，解析 NMS 输出
+    │   ├── ObjectDetector.swift    # YOLO11s + Vision，解析 NMS 输出
     │   ├── PoseDetector.swift      # 人体姿态
     │   └── DetectionEngine.swift   # 调度 + 背压 + 性能统计
     ├── UI/
@@ -115,7 +132,7 @@ VisionCam/
     │   ├── OverlayView.swift       # Canvas 画框 / 标签 / 骨架
     │   └── ControlPanel.swift      # 底部控制面板
     └── Models/
-        └── YOLOv8n.mlpackage       # 已打补丁的 CoreML 模型（6.2 MB）
+        └── YOLO11s.mlpackage       # 已打补丁的 CoreML 模型（19 MB）
 ```
 
 ## 构建
@@ -146,11 +163,13 @@ gh run watch <run-id>
 ## 已知限制
 
 - **未签名 IPA 有 7 天有效期**（免费 Apple ID 签名机制决定的，不是打包问题）。
-- 物体检测精度受 YOLOv8n 这个最小模型限制，小目标 / 遮挡场景会漏检。
+- 模型是 COCO 80 类，**类别之外的物品（耳机、充电器、眼镜等）识别不出来**，
+  这是类别集限制，换更大的模型也没用。
+- 物体检测聚焦画面中央正方形区域（见上文裁剪方式），边缘目标需要挪到画面中间。
 - 模型内部门槛固定为 0.25，界面上的置信度滑杆只能在此基础上**往上**过滤。
 - App 锁定竖屏（横屏下坐标换算需要额外的方向处理）。
 
 ## 许可
 
-仅供自用与学习。COCO 类别名来自公开数据集；YOLOv8n 权重版权归 Ultralytics
+仅供自用与学习。COCO 类别名来自公开数据集；YOLO11s 权重版权归 Ultralytics
 （AGPL-3.0），商用请自行确认授权。

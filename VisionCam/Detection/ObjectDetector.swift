@@ -3,7 +3,7 @@ import CoreML
 import ImageIO
 import Vision
 
-/// 基于 YOLOv8n（CoreML）的物体检测器。
+/// 基于 YOLO11s（CoreML）的物体检测器。
 ///
 /// 模型是 Ultralytics 导出的 **带内置 NMS 的 CoreML pipeline**：
 ///   * 输入：`image`（640×640，RGB）
@@ -29,7 +29,7 @@ import Vision
 /// 映射回「整幅画面的归一化坐标」即可，映射关系见 `CropMapping`。
 final class ObjectDetector {
 
-    private static let modelName = "YOLOv8n"
+    private static let modelName = "YOLO11s"
 
     /// 复用同一个 request：`VNCoreMLRequest` 不是线程安全的，
     /// 但本类只在检测串行队列上使用，复用可以省掉每帧的构建开销。
