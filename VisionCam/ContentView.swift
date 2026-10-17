@@ -13,8 +13,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             OverlayView(items: engine.items,
-                        imageSize: engine.orientedImageSize,
-                        objectRegion: engine.objectRegion)
+                        imageSize: engine.orientedImageSize)
                 .ignoresSafeArea()
 
             VStack(spacing: 12) {
@@ -59,7 +58,11 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
-            if engine.modelErrorMessage != nil {
+            if engine.diagnosticMessage != nil {
+                StatusPill(icon: "exclamationmark.triangle.fill",
+                           text: "识别异常",
+                           tint: .orange)
+            } else if engine.modelErrorMessage != nil {
                 StatusPill(icon: "exclamationmark.triangle.fill",
                            text: "模型异常",
                            tint: .orange)

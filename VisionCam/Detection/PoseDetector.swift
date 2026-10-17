@@ -94,6 +94,7 @@ final class PoseDetector {
         let average = confidenceSum / Float(joints.count)
 
         return .person(label: "人物",
+                       classIndex: COCOLabels.personIndex,
                        confidence: average,
                        box: box,
                        joints: joints,

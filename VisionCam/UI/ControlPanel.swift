@@ -39,7 +39,7 @@ struct ControlPanel: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.white.opacity(0.75))
 
-                Slider(value: $engine.minConfidence, in: 0.25...0.9)
+                Slider(value: $engine.minConfidence, in: 0.10...0.90)
                     .tint(accent)
 
                 Text("\(Int((engine.minConfidence * 100).rounded()))%")
@@ -71,9 +71,9 @@ struct ControlPanel: View {
         }
         switch (engine.detectObjects, engine.detectPose) {
         case (true, true):
-            return "青色框 = 人物（带骨架）· 黄色框 = 其他物体\n物体识别聚焦画面中央正方形区域，把目标放中间更准"
+            return "青色框 = 人物（带骨架）· 黄色框 = 其他物体\n全画面分块扫描，画面各处都能识别；小物体凑近一点更稳"
         case (true, false):
-            return "黄色框 = 识别到的物体\n物体识别聚焦画面中央正方形区域，把目标放中间更准"
+            return "黄色框 = 识别到的物体\n全画面分块扫描，画面各处都能识别；识别不到就把置信度调低试试"
         case (false, true):
             return "青色框 = 人物，橙线 = 骨骼连接"
         case (false, false):
