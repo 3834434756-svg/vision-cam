@@ -9,7 +9,7 @@ App 端的置信度滑杆只能在它之上做二次过滤 —— 低于 0.25 �
 所以不会影响权重、也不需要重新导出模型。
 
 用法:
-    python3 tools/tune_nms.py VisionCam/Models/YOLO11s.mlpackage --conf 0.10 --iou 0.45
+    python3 tools/tune_nms.py VisionCam/Models/YOLO11m.mlpackage --conf 0.10 --iou 0.45
 """
 
 import argparse

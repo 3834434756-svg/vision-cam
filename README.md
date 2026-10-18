@@ -11,7 +11,7 @@
 
 | | 说明 |
 |---|---|
-| **物体识别** | YOLO11s（CoreML，COCO 80 类）实时检测，**全画面分块扫描**，画出方框 + 中文名称 + 置信度 |
+| **物体识别** | YOLO11m（CoreML，COCO 80 类）实时检测，**全画面分块扫描**，画出方框 + 中文名称 + 置信度 |
 | **人体姿态** | Vision `VNDetectHumanBodyPoseRequest`，19 个关键点 + 骨骼连线，附带人物外框 |
 | **人物融合** | YOLO 的人物框与姿态骨架按 IoU 合并，一个人只画一个框；YOLO 扫过却没看到人时，姿态误报自动降权 |
 | **实时叠加** | 相机画面 + 检测结果叠加显示，底部可开关各项检测、调置信度门槛、切换前后摄像头 |
@@ -19,6 +19,20 @@
 
 界面配色约定：**青色框 = 人物**（姿态检测带骨架；姿态关闭时由 YOLO 的 person 类兜底），
 **黄色框 = 其他物体**。
+
+## v1.1.2 改了什么
+
+物体框终于出来了，但**分类精度不够**：书架上的深蓝色瓶子被标成「书 95%」。
+
+这不是阈值能解决的——模型确实以 95% 的置信度认为它是书。原因有三层：
+YOLO11s 容量有限；画面本身失焦、细节少；COCO 的 `bottle` 类对非标准瓶子
+（洗发水、饮料）召回本来就低。
+
+**换模型**：YOLO11s → YOLO11m（9.4M → 20.1M 参数，mAP 47.0 → 51.5）。
+代价是模型 19 MB → 39 MB、单次推理约慢 2.5 倍，帧率大致从 12 掉到 10。
+
+> 如果你的机型跑 m 档明显卡顿，把 `ObjectDetector.modelName` 和
+> `VisionCam/Models/` 换回 s 档即可，帧率会回来，误判也会多回去。
 
 ## v1.1.1 修了什么
 
@@ -63,17 +77,21 @@ v1.1.0 把检测范围从 56% 提到 100%，方向是对的，但漏了一个更
 
 ### 物体检测
 
-**模型选择**：`YOLO11s`（COCO 预训练，9.4M 参数，mAP 47.0）。初版用的是
-`YOLOv8n`（3.2M 参数，mAP 37.3），实测常见物品漏检严重；换成 s 档后精度提升约
-10 个点，代价是模型从 6.2 MB 增到 19 MB。再往上还有 m / l / x 档，精度更高但推理
-更慢，手机上 s 是速度与精度的平衡点。
+**模型选择**：`YOLO11m`（COCO 预训练，20.1M 参数，mAP 51.5）。
+
+之前用的是 s 档（9.4M，mAP 47.0）。s 跑得快，但**分类精度不够**——
+书架、桌面这种密集摆放的场景里，瓶子会被认成「书」，而且置信度还挺高（95%）。
+换到 m 档后 mAP 提升 4.5 个点，代价是模型 19 MB → 39 MB、单次推理约慢 2.5 倍。
+
+如果机型偏慢，可以把 `ObjectDetector.modelName` 和 `VisionCam/Models/` 换回 s 档，
+帧率能回来，误判也会多回去。
 
 自行导出（需 macOS 或 CI 的 macOS runner）：
 
 ```bash
 pip install ultralytics coremltools "torch==2.7.0"   # coremltools 9.0 只测到 torch 2.7.0
-python -c "from ultralytics import YOLO; YOLO('yolo11s.pt').export(format='coreml', nms=True, imgsz=640)"
-python tools/patch_model.py yolo11s.mlpackage YOLO11s.mlpackage --conf 0.10 --iou 0.45
+python -c "from ultralytics import YOLO; YOLO('yolo11m.pt').export(format='coreml', nms=True, imgsz=640)"
+python tools/patch_model.py yolo11m.mlpackage YOLO11m.mlpackage --conf 0.10 --iou 0.45
 ```
 
 > torch 装成更高版本（如 2.14）会在转换时报
@@ -114,7 +132,7 @@ x/y 是**盒子中心点**，w/h 是宽高，且归一化到图像尺寸。
 
 > **踩过的坑**：原始导出的模型除了 `image` 还带 `iouThreshold` /
 > `confidenceThreshold` 两个必填标量输入，`VNCoreMLRequest` 无法提供，
-> 会导致调用失败。本仓库内置的 `YOLO11s.mlpackage` 已用 coremltools 打补丁
+> 会导致调用失败。本仓库内置的 `YOLO11m.mlpackage` 已用 coremltools 打补丁
 > 移除这两个输入（清空 `*InputFeatureName`），让 NMS 回退使用内置参数，
 > 从而只剩单个 `image` 输入，Vision 可以直接跑。打补丁的脚本见 `tools/patch_model.py`。
 
@@ -133,7 +151,7 @@ App 端的滑杆只能在它**之上**做二次过滤，所以低于 0.25 的目
 可以随时重新调：
 
 ```bash
-python tools/tune_nms.py VisionCam/Models/YOLO11s.mlpackage --conf 0.10 --iou 0.45
+python tools/tune_nms.py VisionCam/Models/YOLO11m.mlpackage --conf 0.10 --iou 0.45
 ```
 
 #### 输出解析
@@ -216,7 +234,7 @@ VisionCam/
     ├── Detection/
     │   ├── DetectionTypes.swift    # DetectedItem / Joint / 骨骼连接表 / IoU 工具
     │   ├── COCOLabels.swift        # COCO 80 类中英文名
-    │   ├── ObjectDetector.swift    # YOLO11s + Vision，分块扫描与输出解析
+    │   ├── ObjectDetector.swift    # YOLO11m + Vision，分块扫描与输出解析
     │   ├── PoseDetector.swift      # 人体姿态
     │   └── DetectionEngine.swift   # 调度、跨块合并、人物融合、平滑、性能统计
     ├── UI/
@@ -224,7 +242,7 @@ VisionCam/
     │   ├── OverlayView.swift       # Canvas 画框 / 标签 / 骨架
     │   └── ControlPanel.swift      # 底部控制面板
     └── Models/
-        └── YOLO11s.mlpackage       # 已打补丁的 CoreML 模型（19 MB）
+        └── YOLO11m.mlpackage       # 已打补丁的 CoreML 模型（39 MB）
 ```
 
 ## 构建
@@ -264,5 +282,5 @@ gh run watch <run-id>
 
 ## 许可
 
-仅供自用与学习。COCO 类别名来自公开数据集；YOLO11s 权重版权归 Ultralytics
+仅供自用与学习。COCO 类别名来自公开数据集；YOLO11m 权重版权归 Ultralytics
 （AGPL-3.0），商用请自行确认授权。

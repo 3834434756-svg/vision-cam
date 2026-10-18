@@ -66,7 +66,7 @@ jobs:
           echo "--- scheme 列表 ---"
           xcodebuild -list -project "${PRODUCT_NAME}.xcodeproj"
           echo "--- 确认 CoreML 模型被纳入编译 ---"
-          grep -c "YOLO11s.mlpackage" "${PRODUCT_NAME}.xcodeproj/project.pbxproj" || true
+          grep -c "YOLO11m.mlpackage" "${PRODUCT_NAME}.xcodeproj/project.pbxproj" || true
 
       - name: Archive（关闭代码签名）
         run: |
@@ -90,12 +90,12 @@ jobs:
           # 注意：不要用 `ls | head`，pipefail 下 head 提前退出会让 ls 收到 SIGPIPE 而误判失败
           ls -la "$APP"
           echo "--- mlmodelc 内容 ---"
-          ls -la "$APP/YOLO11s.mlmodelc" || true
-          if [ ! -d "$APP/YOLO11s.mlmodelc" ]; then
-            echo "::error::YOLO11s.mlmodelc 不在 app bundle 里，CoreML 模型没有被编译进去"
+          ls -la "$APP/YOLO11m.mlmodelc" || true
+          if [ ! -d "$APP/YOLO11m.mlmodelc" ]; then
+            echo "::error::YOLO11m.mlmodelc 不在 app bundle 里，CoreML 模型没有被编译进去"
             exit 1
           fi
-          echo "✅ YOLO11s.mlmodelc 已在 bundle 内"
+          echo "✅ YOLO11m.mlmodelc 已在 bundle 内"
 
       - name: 打包成未签名 IPA
         run: |

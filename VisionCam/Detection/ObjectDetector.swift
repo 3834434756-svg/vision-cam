@@ -6,7 +6,7 @@ import Foundation
 import ImageIO
 import Vision
 
-/// 基于 YOLO11s（CoreML）的物体检测器。
+/// 基于 YOLO11m（CoreML）的物体检测器。
 ///
 /// 模型是 Ultralytics 导出的**带内置 NMS 的 CoreML pipeline**。这种模型在 Vision 里
 /// 会被当成「对象检测模型」，`request.results` 直接就是 `[VNRecognizedObjectObservation]`
@@ -31,7 +31,7 @@ import Vision
 /// 各块结果按 IoU 合并，覆盖率 100%，每帧推理次数不变。
 final class ObjectDetector {
 
-    private static let modelName = "YOLO11s"
+    private static let modelName = "YOLO11m"
 
     /// 一次检测的产出，除了结果本身还带上诊断信息。
     struct Outcome {
