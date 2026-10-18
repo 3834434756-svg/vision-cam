@@ -37,6 +37,20 @@ enum COCOLabels {
     /// `person` 在 COCO 中的类别索引。
     static let personIndex = 0
 
+    /// 由类别标识反查索引。
+    ///
+    /// CoreML 内置 NMS 输出的标签就是英文类名（如 `"person"`、`"bottle"`），
+    /// 个别导出方式会给数字字符串，这里两种都接住。
+    static func index(for identifier: String) -> Int? {
+        if let index = english.firstIndex(of: identifier) {
+            return index
+        }
+        if let index = Int(identifier), index >= 0, index < english.count {
+            return index
+        }
+        return nil
+    }
+
     /// 按类别索引取中文名，越界时回退成英文名或索引。
     static func displayName(index: Int) -> String {
         if index >= 0 && index < chinese.count {

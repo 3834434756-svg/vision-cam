@@ -1,39 +1,39 @@
 import CoreGraphics
+import CoreImage
 import CoreML
+import CoreVideo
 import Foundation
 import ImageIO
 import Vision
 
 /// 基于 YOLO11s（CoreML）的物体检测器。
 ///
-/// 模型是 Ultralytics 导出的 **带内置 NMS 的 CoreML pipeline**：
-///   * 输入：`image`（640×640，RGB）
-///   * 输出：`confidence` 形状 [N, 80]，`coordinates` 形状 [N, 4]
+/// 模型是 Ultralytics 导出的**带内置 NMS 的 CoreML pipeline**。这种模型在 Vision 里
+/// 会被当成「对象检测模型」，`request.results` 直接就是 `[VNRecognizedObjectObservation]`
+/// —— 每个 observation 自带 `boundingBox` 和类别标签，不需要自己去读张量。
 ///
-/// `coordinates` 每行是 `[cx, cy, w, h]`，**已归一化到 0~1**（Apple 官方
-/// CoreML proto 对 pipeline NMS 的定义：x/y 是盒子中心点，w/h 是宽高）。
+/// 之前按 `[VNCoreMLFeatureValueObservation]` 解析，类型转换必然失败，
+/// 于是每帧都返回「模型输出类型异常」，物体检测实际上从未出过一个框。
+/// 界面上看到的框全部来自姿态检测，这就是「只有人物有框」的真正原因。
 ///
-/// ## 为什么不再只用「中心裁剪」
+/// ## 为什么自己裁剪而不用 `regionOfInterest`
 ///
-/// 手机竖屏取景时画面是「高瘦」的（720×1280），而模型输入是正方形 640×640。
-/// 早期版本为了不损失分辨率，只把画面**正中间的正方形**送进模型——
-/// 这等于把上下各 22% 的画面直接丢掉，检测范围只有整幅画面的 56%。
-/// 人物由姿态检测负责（跑的是整幅画面），所以「人一直有框、桌上的杯子书本没有框」
-/// 就成了必然结果，而不是模型不行。
+/// `regionOfInterest` 的坐标空间与 `orientation` 的组合在不同 iOS 版本上表现不一致：
+/// 竖屏时 ROI 可能按「未旋转」的原始像素空间解释，导致裁出来的是一条竖带而不是横条；
+/// 观察结果是否相对 ROI 归一化也有歧义。这里改成先用 CIImage 把画面摆正、再按瓦片裁剪，
+/// 送进 Vision 时固定 `orientation: .up`，坐标从哪里来到哪里去完全可控。
 ///
-/// 现在改成 **分块扫描（tiling）**：把整幅画面切成若干互相重叠的正方形瓦片，
-/// 每帧只跑其中一块、轮流刷新，再把各块结果按 IoU 合并。这样
-///   * 覆盖范围 = 100%（不再有盲区）；
-///   * 每一块都是「原分辨率 → 640」的等比缩放，小物体不会被缩小两次；
-///   * 每帧仍然只跑一次模型，耗时与之前持平。
+/// ## 分块扫描
+///
+/// 手机竖屏取景是「高瘦」的（720×1280），模型输入却是正方形 640×640。
+/// 只取中间正方形会让上下各 22% 的画面完全没有检测（覆盖率 56%）。
+/// 所以把整幅画面切成互相重叠的正方形瓦片，每帧跑一块、轮流刷新，
+/// 各块结果按 IoU 合并，覆盖率 100%，每帧推理次数不变。
 final class ObjectDetector {
 
     private static let modelName = "YOLO11s"
 
     /// 一次检测的产出，除了结果本身还带上诊断信息。
-    ///
-    /// 之前如果 Vision 返回的结构和预期不符，解析会静默返回空数组，
-    /// 表现就是「只有姿态检测的人物有框」。现在把失败原因带出去，UI 能直接提示。
     struct Outcome {
         var items: [DetectedItem] = []
         /// 模型 NMS 输出的候选框数量（过滤前）。
@@ -44,9 +44,7 @@ final class ObjectDetector {
 
     /// 一块检测区域：整幅画面被切成的正方形之一。
     struct Tile {
-        /// Vision 的 `regionOfInterest`（原点左下、归一化）。
-        let roi: CGRect
-        /// 同一块区域在「原点左上」归一化坐标下的位置，用于把模型输出映射回整幅画面。
+        /// 摆正后、原点左上的归一化矩形，用于把模型输出映射回整幅画面。
         let rect: CGRect
     }
 
@@ -106,32 +104,20 @@ final class ObjectDetector {
             let count = span <= 1 ? 1 : Int(ceil(span / step)) + 1
             for index in 0..<count {
                 let top = count == 1 ? span / 2 : span * CGFloat(index) / CGFloat(count - 1)
-                tiles.append(Tile(
-                    roi: CGRect(x: 0,
-                                y: 1 - (top + side) / height,
-                                width: 1,
-                                height: side / height),
-                    rect: CGRect(x: 0,
-                                 y: top / height,
-                                 width: 1,
-                                 height: side / height)
-                ))
+                tiles.append(Tile(rect: CGRect(x: 0,
+                                               y: top / height,
+                                               width: 1,
+                                               height: side / height)))
             }
         } else {
             let span = width - side
             let count = span <= 1 ? 1 : Int(ceil(span / step)) + 1
             for index in 0..<count {
                 let left = count == 1 ? span / 2 : span * CGFloat(index) / CGFloat(count - 1)
-                tiles.append(Tile(
-                    roi: CGRect(x: left / width,
-                                y: 0,
-                                width: side / width,
-                                height: 1),
-                    rect: CGRect(x: left / width,
-                                 y: 0,
-                                 width: side / width,
-                                 height: 1)
-                ))
+                tiles.append(Tile(rect: CGRect(x: left / width,
+                                               y: 0,
+                                               width: side / width,
+                                               height: 1)))
             }
         }
 
@@ -152,20 +138,97 @@ final class ObjectDetector {
                 tile: Tile,
                 minConfidence: Float) -> Outcome {
 
-        request.regionOfInterest = tile.roi
+        let cropped = crop(pixelBuffer, orientation: orientation, tile: tile)
+        let handler = VNImageRequestHandler(ciImage: cropped, orientation: .up, options: [:])
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
-                                            orientation: orientation,
-                                            options: [:])
         do {
             try handler.perform([request])
         } catch {
             return Outcome(failure: "推理失败：\(error.localizedDescription)")
         }
 
-        guard let observations = request.results as? [VNCoreMLFeatureValueObservation] else {
-            return Outcome(failure: "模型输出类型异常")
+        // 带 NMS 的模型：Vision 直接给出对象观察值
+        if let observations = request.results as? [VNRecognizedObjectObservation] {
+            return parse(observations: observations,
+                         mapping: tile.rect,
+                         minConfidence: minConfidence)
         }
+
+        // 兜底：不带 NMS 的模型输出原始张量
+        if let features = request.results as? [VNCoreMLFeatureValueObservation] {
+            return parseTensors(features,
+                                mapping: tile.rect,
+                                minConfidence: minConfidence)
+        }
+
+        let kind: String
+        if let results = request.results, let first = results.first {
+            kind = String(describing: type(of: first))
+        } else {
+            kind = "空结果"
+        }
+        return Outcome(failure: "未知输出类型：\(kind)")
+    }
+
+    /// 把画面按 EXIF 方向摆正，再裁出瓦片对应的正方形。
+    ///
+    /// 返回的 CIImage 原点在 (0, 0)，因此观察值的 `boundingBox` 就是相对这块瓦片的归一化坐标。
+    private func crop(_ pixelBuffer: CVPixelBuffer,
+                      orientation: CGImagePropertyOrientation,
+                      tile: Tile) -> CIImage {
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        if orientation != .up {
+            image = image.oriented(orientation)
+        }
+
+        let extent = image.extent
+        // tile.rect 原点在左上，CIImage 原点在左下，y 需要翻转
+        let cropRect = CGRect(
+            x: extent.minX + tile.rect.minX * extent.width,
+            y: extent.minY + (1 - tile.rect.maxY) * extent.height,
+            width: tile.rect.width * extent.width,
+            height: tile.rect.height * extent.height
+        )
+
+        return image.cropped(to: cropRect)
+            .transformed(by: CGAffineTransform(translationX: -cropRect.minX,
+                                               y: -cropRect.minY))
+    }
+
+    // MARK: - 解析：对象观察值
+
+    private func parse(observations: [VNRecognizedObjectObservation],
+                       mapping: CGRect,
+                       minConfidence: Float) -> Outcome {
+
+        var items: [DetectedItem] = []
+        items.reserveCapacity(observations.count)
+
+        for observation in observations {
+            // labels 已按置信度排序，取最高分那个
+            guard let label = observation.labels.max(by: { $0.confidence < $1.confidence }) else {
+                continue
+            }
+            guard label.confidence >= minConfidence else { continue }
+
+            let box = map(observation.boundingBox, into: mapping)
+            guard let clipped = clip(box) else { continue }
+
+            items.append(makeItem(identifier: label.identifier,
+                                  score: label.confidence,
+                                  box: clipped))
+        }
+
+        return Outcome(items: items,
+                       rawBoxCount: observations.count,
+                       failure: nil)
+    }
+
+    // MARK: - 解析：原始张量（兜底）
+
+    private func parseTensors(_ observations: [VNCoreMLFeatureValueObservation],
+                              mapping: CGRect,
+                              minConfidence: Float) -> Outcome {
 
         var confidenceArray: MLMultiArray?
         var coordinateArray: MLMultiArray?
@@ -184,27 +247,12 @@ final class ObjectDetector {
             return Outcome(failure: "缺少 confidence / coordinates 输出")
         }
 
-        return parse(confidence: confidence,
-                     coordinates: coordinates,
-                     mapping: tile.rect,
-                     minConfidence: minConfidence)
-    }
-
-    // MARK: - 输出解析
-
-    private func parse(confidence: MLMultiArray,
-                       coordinates: MLMultiArray,
-                       mapping: CGRect,
-                       minConfidence: Float) -> Outcome {
-
         guard let layout = Layout(confidence: confidence, coordinates: coordinates) else {
             return Outcome(failure: "输出张量形状异常")
         }
 
         var items: [DetectedItem] = []
         items.reserveCapacity(min(layout.boxCount, 32))
-
-        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
 
         for row in 0..<layout.boxCount {
             var bestClass = -1
@@ -227,41 +275,71 @@ final class ObjectDetector {
 
             guard boxWidth > 0.001, boxHeight > 0.001 else { continue }
 
-            // 映射回整幅画面（仍是 y 向下）
             let fullLeft = mapping.minX + (centerX - boxWidth / 2) * mapping.width
             let fullTop = mapping.minY + (centerY - boxHeight / 2) * mapping.height
             let fullWidth = boxWidth * mapping.width
             let fullHeight = boxHeight * mapping.height
 
-            // 换成 Vision 坐标：原点左下、y 轴向上
             let rect = CGRect(x: fullLeft,
                               y: 1 - fullTop - fullHeight,
                               width: fullWidth,
                               height: fullHeight)
 
-            let clipped = rect.intersection(unit)
-            guard !clipped.isNull, clipped.width > 0.005, clipped.height > 0.005 else { continue }
+            guard let clipped = clip(rect) else { continue }
 
-            let label = COCOLabels.displayName(index: bestClass)
-            if bestClass == COCOLabels.personIndex {
-                // 没有骨架的「人物」，由引擎和姿态检测的结果合并
-                items.append(.person(label: label,
-                                     classIndex: bestClass,
-                                     confidence: bestScore,
-                                     box: clipped,
-                                     joints: [:],
-                                     jointConfidences: [:]))
-            } else {
-                items.append(.object(label: label,
-                                     classIndex: bestClass,
-                                     confidence: bestScore,
-                                     box: clipped))
-            }
+            let identifier = bestClass < COCOLabels.english.count
+                ? COCOLabels.english[bestClass]
+                : "\(bestClass)"
+            items.append(makeItem(identifier: identifier,
+                                  score: bestScore,
+                                  box: clipped))
         }
 
         return Outcome(items: items,
                        rawBoxCount: layout.boxCount,
                        failure: nil)
+    }
+
+    // MARK: - 辅助
+
+    /// 把瓦片内的归一化矩形映射回整幅画面的 Vision 坐标（原点左下）。
+    private func map(_ box: CGRect, into mapping: CGRect) -> CGRect {
+        // 瓦片坐标（左下原点）→ 整幅画面（左上原点）
+        let left = mapping.minX + box.minX * mapping.width
+        let top = mapping.minY + (1 - box.maxY) * mapping.height
+        let width = box.width * mapping.width
+        let height = box.height * mapping.height
+        // 再转回 Vision 坐标（左下原点）
+        return CGRect(x: left,
+                      y: 1 - top - height,
+                      width: width,
+                      height: height)
+    }
+
+    /// 裁到画面范围内，太小的框直接丢掉。
+    private func clip(_ rect: CGRect) -> CGRect? {
+        let clipped = rect.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !clipped.isNull, clipped.width > 0.005, clipped.height > 0.005 else { return nil }
+        return clipped
+    }
+
+    private func makeItem(identifier: String, score: Float, box: CGRect) -> DetectedItem {
+        let index = COCOLabels.index(for: identifier) ?? -1
+        let name = index >= 0 ? COCOLabels.displayName(index: index) : identifier
+
+        if index == COCOLabels.personIndex {
+            // 没有骨架的「人物」，由引擎和姿态检测的结果合并
+            return .person(label: name,
+                           classIndex: index,
+                           confidence: score,
+                           box: box,
+                           joints: [:],
+                           jointConfidences: [:])
+        }
+        return .object(label: name,
+                       classIndex: index,
+                       confidence: score,
+                       box: box)
     }
 
     // MARK: - 跨瓦片去重
@@ -314,9 +392,6 @@ final class ObjectDetector {
 /// 描述 NMS 输出的二维布局，兼容两种常见排布：
 ///   * 框优先：`[N, C]` / `[1, N, C]`
 ///   * 通道优先：`[C, N]` / `[1, C, N]`
-///
-/// 理论上本模型是前者，但不同 coremltools 版本导出结果可能不同，
-/// 这里两种都接住，避免「解析不出来就静默返回空数组」。
 private struct Layout {
 
     let confidence: MatrixReader
@@ -365,9 +440,6 @@ private struct Layout {
 // MARK: - 多数组读取
 
 /// 轻量二维读取器：提前缓存裸指针与步长，兼容 float32 / float16 / double。
-///
-/// 直接照搬 `MLMultiArray` 的 strides 读取，因此无论数组是否连续、
-/// 是否带 batch 维都能正确取值。
 private struct MatrixReader {
 
     private let pointer: UnsafeMutableRawPointer

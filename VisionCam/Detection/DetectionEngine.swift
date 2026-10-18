@@ -154,8 +154,14 @@ final class DetectionEngine: ObservableObject {
                                               orientation: orientation,
                                               tile: self.tiles[index],
                                               minConfidence: threshold)
-                self.tileItems[index] = outcome.items
-                self.tileStamps[index] = CACurrentMediaTime()
+                if outcome.failure == nil {
+                    self.tileItems[index] = outcome.items
+                    self.tileStamps[index] = CACurrentMediaTime()
+                } else {
+                    // 这一块没扫成功：清空结果并标记为无效，别让旧框冒充新结果
+                    self.tileItems[index] = []
+                    self.tileStamps[index] = 0
+                }
                 self.nextTile = (index + 1) % self.tiles.count
                 self.latestCandidateCount = outcome.rawBoxCount
                 self.latestDiagnostic = outcome.failure
@@ -191,11 +197,13 @@ final class DetectionEngine: ObservableObject {
                     : self.smoothedLatency * 0.8 + elapsed * 0.2
             }
 
-            // 合并各瓦片的结果（跨块去重）
+            // 合并各瓦片的结果（跨块去重），同时记录哪些区域这一轮真的扫过
             var objects: [DetectedItem] = []
+            var scannedTiles: [CGRect] = []
             if wantObjects {
                 for index in self.tiles.indices where now - self.tileStamps[index] < DetectionEngine.cacheLifetime {
                     objects.append(contentsOf: self.tileItems[index])
+                    scannedTiles.append(self.tiles[index].rect)
                 }
                 objects = ObjectDetector.suppressDuplicates(objects, iouThreshold: 0.45)
             }
@@ -206,10 +214,13 @@ final class DetectionEngine: ObservableObject {
                 poses = self.cachedPoses
             }
 
-            // 注意：置信度门槛在物体检测内部已经过滤过；姿态结果不受滑杆影响，
-            // 否则把门槛调高会把「人物」一起筛掉。
-            let fused = DetectionEngine.fusePersons(poses: poses, objects: objects)
+            // 姿态和 YOLO 互相印证：YOLO 扫过的区域里没检出人，姿态结果就降权
+            let fused = DetectionEngine.fusePersons(poses: poses,
+                                                    objects: objects,
+                                                    scannedTiles: scannedTiles)
             var results = fused.objects + fused.persons
+            // 统一走置信度门槛：误报被降权后会自然沉到门槛以下
+            results = results.filter { $0.confidence >= threshold }
             // 置信度高的排前面，画的时候压在下面
             results.sort { $0.confidence > $1.confidence }
 
@@ -249,13 +260,23 @@ final class DetectionEngine: ObservableObject {
 
     // MARK: - 人物合并
 
+    /// 没有 YOLO 支持时，姿态结果保留多少置信度。
+    ///
+    /// 瓶子这类误报通常 50% 左右，乘完落到 17% 上下，默认 25% 门槛下不再显示；
+    /// 用户把滑杆拉低到 10% 时仍会出现，那是主动要求高灵敏度的结果。
+    private static let unsupportedPosePenalty: Float = 0.35
+
     /// 把姿态检测和 YOLO 的 person 类合并，保证「一个人只有一个框」。
     ///
     /// 姿态的框来自关键点外接框，会随手臂摆动而跳动；YOLO 的框更稳。
     /// 所以两者匹配上时用 YOLO 的框、保留骨架；姿态漏检时仍然保留 YOLO 的框，
     /// 不会出现「人在画面里但没有框」。
+    ///
+    /// 反过来，YOLO 已经扫过姿态框所在区域、却完全没检出人时，这个「人」大概率是
+    /// Vision 姿态模型把竖长物体（瓶子、灯杆）误认成了人 —— 这时大幅降权。
     private static func fusePersons(poses: [DetectedItem],
-                                    objects: [DetectedItem]) -> (objects: [DetectedItem], persons: [DetectedItem]) {
+                                    objects: [DetectedItem],
+                                    scannedTiles: [CGRect]) -> (objects: [DetectedItem], persons: [DetectedItem]) {
 
         let others = objects.filter { $0.classIndex != COCOLabels.personIndex }
         let yoloPersons = objects.filter { $0.classIndex == COCOLabels.personIndex }
@@ -289,6 +310,8 @@ final class DetectionEngine: ObservableObject {
                 let box = yoloArea >= poseArea * 0.75 ? yoloBox : pose.box
                 fused.append(pose.replacing(box: box,
                                             confidence: max(pose.confidence, yoloPersons[index].confidence)))
+            } else if let penalized = penalizedConfidence(for: pose, scannedTiles: scannedTiles) {
+                fused.append(pose.replacing(box: pose.box, confidence: penalized))
             } else {
                 fused.append(pose)
             }
@@ -299,6 +322,20 @@ final class DetectionEngine: ObservableObject {
         }
 
         return (others, fused)
+    }
+
+    /// 姿态框所在区域已被 YOLO 扫过、却没有对应的人 → 返回降权后的置信度。
+    ///
+    /// 返回 nil 表示那块区域这一轮还没扫到，无法判断，保留原始置信度。
+    private static func penalizedConfidence(for pose: DetectedItem,
+                                            scannedTiles: [CGRect]) -> Float? {
+        guard !scannedTiles.isEmpty else { return nil }
+
+        // Vision 坐标（原点左下）→ 瓦片坐标（原点左上）
+        let center = CGPoint(x: pose.box.midX, y: 1 - pose.box.midY)
+        guard scannedTiles.contains(where: { $0.contains(center) }) else { return nil }
+
+        return pose.confidence * unsupportedPosePenalty
     }
 
     // MARK: - 平滑
