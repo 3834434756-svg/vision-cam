@@ -16,8 +16,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.1.2"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "1.1.3"
+    CURRENT_PROJECT_VERSION: "5"
     SWIFT_VERSION: "5.0"
     # 统一关闭签名 —— 云端出的是未签名 IPA
     CODE_SIGN_IDENTITY: ""
@@ -45,8 +45,8 @@ targets:
       properties:
         CFBundleDisplayName: 视觉相机
         CFBundleName: VisionCam
-        CFBundleShortVersionString: "1.1.2"
-        CFBundleVersion: "4"
+        CFBundleShortVersionString: "1.1.3"
+        CFBundleVersion: "5"
         NSCameraUsageDescription: 需要使用相机来实时识别物体和人体姿态。所有画面均在本机处理，不会上传到任何服务器。
         UILaunchScreen: {}
         UIRequiredDeviceCapabilities:

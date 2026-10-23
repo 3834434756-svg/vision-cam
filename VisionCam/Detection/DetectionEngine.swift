@@ -49,6 +49,14 @@ final class DetectionEngine: ObservableObject {
     @Published var detectPose = true
     /// 前端置信度门槛（模型内部门槛是 0.10，所以下限取 0.10）。
     @Published var minConfidence: Double = 0.25
+    /// 用户主动隐藏的类别（COCO 索引）。
+    ///
+    /// COCO 只有 80 个类别，画面里的东西不在其中时，模型只能挑最像的那个 ——
+    /// 塑料袋会被认成「泰迪熊」、包装盒会被认成「书」，置信度还很高，
+    /// 靠调阈值挡不住。这里让用户直接把不关心的类别关掉。
+    @Published var hiddenClasses: Set<Int> = []
+    /// 当前画面里出现过的类别，用于在类别列表里把常用项排到前面。
+    @Published private(set) var activeClasses: Set<Int> = []
 
     // MARK: 内部
 
@@ -123,6 +131,7 @@ final class DetectionEngine: ObservableObject {
         let wantObjects = detectObjects
         let wantPose = detectPose
         let threshold = Float(minConfidence)
+        let hidden = hiddenClasses
 
         // 真正的丢帧：上一帧还在推理就直接丢掉这一帧，避免队列无限堆积
         gate.lock()
@@ -221,6 +230,12 @@ final class DetectionEngine: ObservableObject {
             var results = fused.objects + fused.persons
             // 统一走置信度门槛：误报被降权后会自然沉到门槛以下
             results = results.filter { $0.confidence >= threshold }
+            // 过滤前的类别集合：即使被用户关掉，也要让类别列表知道画面里有它
+            let detectedClasses = Set(results.map { $0.classIndex })
+            // 用户关掉的类别不显示
+            if !hidden.isEmpty {
+                results = results.filter { !hidden.contains($0.classIndex) }
+            }
             // 置信度高的排前面，画的时候压在下面
             results.sort { $0.confidence > $1.confidence }
 
@@ -240,6 +255,7 @@ final class DetectionEngine: ObservableObject {
                 self.tileCount = max(tileCount, 1)
                 self.rawCandidateCount = candidates
                 self.diagnosticMessage = diagnostic
+                self.activeClasses = detectedClasses
             }
         }
     }

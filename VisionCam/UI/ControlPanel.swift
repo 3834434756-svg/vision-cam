@@ -7,6 +7,8 @@ struct ControlPanel: View {
     let usingFrontCamera: Bool
     let onSwitchCamera: () -> Void
 
+    @State private var showingClassFilter = false
+
     private let accent = Color(red: 0.15, green: 0.90, blue: 0.95)
 
     var body: some View {
@@ -23,6 +25,24 @@ struct ControlPanel: View {
                            tint: accent)
 
                 Spacer(minLength: 0)
+
+                Button {
+                    showingClassFilter = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: engine.hiddenClasses.isEmpty
+                              ? "line.3.horizontal.decrease.circle"
+                              : "line.3.horizontal.decrease.circle.fill")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("类别")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(engine.hiddenClasses.isEmpty ? .white.opacity(0.85) : .orange)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color.white.opacity(0.14)))
+                }
+                .buttonStyle(.plain)
 
                 Button(action: onSwitchCamera) {
                     Image(systemName: "arrow.triangle.2.circlepath.camera")
@@ -63,6 +83,9 @@ struct ControlPanel: View {
             RoundedRectangle(cornerRadius: 20)
                 .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
         )
+        .sheet(isPresented: $showingClassFilter) {
+            ClassFilterView(engine: engine)
+        }
     }
 
     private var hintText: String {
@@ -71,9 +94,9 @@ struct ControlPanel: View {
         }
         switch (engine.detectObjects, engine.detectPose) {
         case (true, true):
-            return "青色框 = 人物（带骨架）· 黄色框 = 其他物体\n全画面分块扫描，画面各处都能识别；小物体凑近一点更稳"
+            return "青色框 = 人物 · 黄色框 = 其他物体\n认错的类别可以点「类别」关掉，比调阈值管用"
         case (true, false):
-            return "黄色框 = 识别到的物体\n全画面分块扫描，画面各处都能识别；识别不到就把置信度调低试试"
+            return "黄色框 = 识别到的物体\n认错的类别可以点「类别」关掉，比调阈值管用"
         case (false, true):
             return "青色框 = 人物，橙线 = 骨骼连接"
         case (false, false):
